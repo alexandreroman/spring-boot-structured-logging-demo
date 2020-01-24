@@ -1,0 +1,22 @@
+persistence:
+  enabled: true
+
+logstashConfig:
+  logstash.yml: |
+    http.host: 0.0.0.0
+    xpack.monitoring.enabled: false
+
+logstashPipeline:
+  uptime.conf: |
+    input {
+      tcp {
+        port => 5000
+        type => syslog
+      }
+    }
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch-master:9200"]
+        index => "logstash"
+      }
+    }

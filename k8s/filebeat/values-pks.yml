@@ -1,0 +1,89 @@
+filebeatConfig:
+  filebeat.yml: |
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          templates:
+            - condition:
+                equals:
+                  kubernetes.namespace: structured-logging
+              config:
+                - type: container
+                  fields:
+                    platform: kubernetes
+                  fields_under_root: true
+                  paths:
+                    - /var/log/containers/*-${data.kubernetes.container.id}.log
+                  json.keys_under_root: true
+                  json.message_key: message
+    filebeat.inputs:
+    - type: syslog
+      protocol.tcp.host: ":9000"
+      fields:
+        platform: cloudfoundry
+      fields_under_root: true
+      processors:
+      - script:
+          lang: javascript
+          id: filter_cloud_foundry
+          source: >
+            function process(event) {
+              var eventFields = event.Get();
+              var msg = eventFields.message;
+
+              if(msg !== null) {
+                var i = msg.indexOf("app_id");
+                if(i !== -1) {
+                  var j = msg.indexOf("]", i);
+                  if(j !== -1) {
+                    // Parse platform attributes first: space, app_id, etc.
+                    var kvs = msg.substring(i, j).split(" ");
+                    for(var ki = 0; ki < kvs.length; ++ki) {
+                      var item = kvs[ki].split("=");
+                      var key = item[0];
+                      var value = {
+                        value: item[1].replace(/"/g, "")
+                      };
+                      // Add a prefix to the key.
+                      event.Put("cloudfoundry." + key, value);
+                    }
+
+                    // We're about to replace this field by the log message.
+                    event.Delete("message");
+
+                    // Extract app log entries as a JSON object.
+                    var appLog = msg.substring(j+1);
+                    var appLogJson = JSON.parse(appLog);
+                    for(var key in appLogJson) {
+                      if(!appLogJson.hasOwnProperty(key)) {
+                        continue;
+                      }
+                      if(key === "@timestamp") {
+                        continue;
+                      }
+                      // All values must be of type String.
+                      event.Put(key, "" + appLogJson[key]);
+                    }
+                  }
+                }
+              }
+            }
+
+    output.elasticsearch:
+      host: '${NODE_NAME}'
+      hosts: '${ELASTICSEARCH_HOSTS:elasticsearch-master:9200}'
+extraVolumeMounts:
+# Mount containers log directories from host (worker node).
+- name: varlog
+  mountPath: /var/log
+  readOnly: true
+- name: varvcapstore
+  mountPath: /var/vcap/store
+  readOnly: true
+extraVolumes:
+- name: varlog
+  hostPath:
+    path: /var/log
+- name: varvcapstore
+  hostPath:
+    path: /var/vcap/store/
